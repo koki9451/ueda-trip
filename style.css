@@ -20,7 +20,8 @@
   --radius: 14px;
 }
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+/* 画面全体は動かさない（動くのは一覧などの中だけ）。全体が引っぱられると、中のスクロールが効かなくなる */
+html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
   font-size: 16px; line-height: 1.6; color: var(--ink); background: var(--bg);
@@ -52,7 +53,7 @@ a { color: var(--blue); }
 main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b)) 0; }
 .view { position: absolute; inset: 0; display: none; }
 .view.is-active { display: block; }
-.page { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 14px 32px; max-width: 680px; margin: 0 auto; }
+.page { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 14px 14px 32px; max-width: 680px; margin: 0 auto; }
 
 /* ── 下部タブ ── */
 .tabbar {
@@ -107,18 +108,21 @@ main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b))
 .sheet {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--card);
   border-radius: 16px 16px 0 0; box-shadow: 0 -3px 14px rgba(0,0,0,.18);
-  display: flex; flex-direction: column; height: 82%; transition: transform .22s ease; will-change: transform;
+  display: flex; flex-direction: column; height: 44%; transition: height .22s ease; overflow: hidden;
   max-width: 680px; margin: 0 auto;
 }
-.sheet.is-peek { transform: translateY(calc(100% - 62px)); }
-.sheet.is-half { transform: translateY(46%); }
-.sheet.is-full { transform: translateY(0); }
+/* 高さを変えて開閉する。位置をずらす方式（transform）は、iPhoneで一覧がスクロールできなくなることがあったためやめた */
+.sheet.is-peek { height: 62px; }
+.sheet.is-half { height: 44%; }
+.sheet.is-full { height: 82%; }
 .sheet.is-drag { transition: none; }
 .sheet-handle { border: 0; background: none; padding: 8px 0 4px; width: 100%; touch-action: none; }
 .sheet-handle span { display: block; width: 44px; height: 5px; border-radius: 3px; background: #c9c2b6; margin: 0 auto; }
 .sheet-head { display: flex; align-items: baseline; gap: 8px; padding: 0 14px 8px; }
-.sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 10px 60%; flex: 1; }
-.sheet.is-full .sheet-body { padding-bottom: 24px; }
+.sheet-body {
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
+  padding: 0 10px 24px; flex: 1; min-height: 0;
+}
 
 .spot-row {
   display: flex; gap: 10px; align-items: center; padding: 10px 6px; border-top: 1px solid var(--line);
@@ -169,7 +173,7 @@ main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b))
   border-radius: 18px 18px 0 0; display: flex; flex-direction: column; overflow: hidden;
 }
 .modal-small { max-height: 80%; }
-.modal-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 0 calc(18px + var(--safe-b)); }
+.modal-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 0 0 calc(18px + var(--safe-b)); }
 .modal-small .modal-body { padding: 18px 16px calc(18px + var(--safe-b)); }
 .modal-x {
   position: absolute; top: 10px; right: 10px; z-index: 2; width: 40px; height: 40px; border-radius: 50%;

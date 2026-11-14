@@ -12,7 +12,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 14;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 15;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -784,25 +784,41 @@ let sheetState = 'half';
 function setSheet(st) {
   sheetState = st; const el = $('#listSheet');
   SHEET_STATES.forEach(s => el.classList.toggle('is-' + s, s === st));
-  el.style.transform = '';
+  el.style.height = '';
 }
 function initSheet() {
   const el = $('#listSheet'), handle = $('#listHandle');
-  let startY = 0, startOff = 0, moved = false, h = 0;
-  const offsetOf = st => st === 'full' ? 0 : (st === 'half' ? h * 0.46 : h - 62);
+  let startY = 0, startH = 0, moved = false, H = 0;
+  // 高さの割合は style.css の .sheet.is-half / .is-full と同じにする
+  const heightOf = st => st === 'full' ? H * 0.82 : (st === 'half' ? H * 0.44 : 62);
   handle.addEventListener('click', () => { if (!moved) setSheet(SHEET_STATES[(SHEET_STATES.indexOf(sheetState) + 1) % 3]); });
-  handle.addEventListener('touchstart', e => { h = el.offsetHeight; startY = e.touches[0].clientY; startOff = offsetOf(sheetState); moved = false; el.classList.add('is-drag'); }, { passive: true });
+  handle.addEventListener('touchstart', e => {
+    H = el.parentElement.clientHeight; startY = e.touches[0].clientY; startH = el.offsetHeight; moved = false; el.classList.add('is-drag');
+  }, { passive: true });
   handle.addEventListener('touchmove', e => {
     const dy = e.touches[0].clientY - startY; if (Math.abs(dy) > 6) moved = true;
-    el.style.transform = `translateY(${Math.min(h - 62, Math.max(0, startOff + dy))}px)`;
+    el.style.height = Math.min(H * 0.82, Math.max(62, startH - dy)) + 'px';
   }, { passive: true });
-  handle.addEventListener('touchend', () => {
+  const endDrag = () => {
     el.classList.remove('is-drag');
-    if (!moved) { el.style.transform = ''; return; }
-    const cur = new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
-    const best = SHEET_STATES.reduce((a, b) => Math.abs(offsetOf(a) - cur) < Math.abs(offsetOf(b) - cur) ? a : b);
+    if (!moved) { el.style.height = ''; return; }
+    const cur = el.offsetHeight;
+    const best = SHEET_STATES.reduce((a, b) => Math.abs(heightOf(a) - cur) < Math.abs(heightOf(b) - cur) ? a : b);
     setSheet(best); setTimeout(() => { moved = false; }, 50);
-  });
+  };
+  handle.addEventListener('touchend', endDrag);
+  handle.addEventListener('touchcancel', endDrag);
+
+  // iPhone対策：一覧がいちばん上（下）にあるときに指を動かすと、画面全体のほうが引っぱられ、
+  // しばらく一覧がスクロールできなくなる。触れた瞬間に1pxだけ内側へ寄せて、それを防ぐ。
+  document.addEventListener('touchstart', e => {
+    const sc = e.target.closest && e.target.closest('.sheet-body, .page, .modal-body');
+    if (!sc) return;
+    const max = sc.scrollHeight - sc.clientHeight;
+    if (max <= 1) return;
+    if (sc.scrollTop <= 0) sc.scrollTop = 1;
+    else if (sc.scrollTop >= max) sc.scrollTop = max - 1;
+  }, { passive: true });
 }
 
 // ───────── スポット詳細 ─────────
