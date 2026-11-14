@@ -10,9 +10,9 @@ AREAS.custom = { name: '追加した場所', note: '自分で追加した場所�
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
+const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1', LS_BACKUP = 'ueda.plan.backup.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 15;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 16;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -76,16 +76,20 @@ function decodePlan(s) {
   const bin = atob(s); const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
   return JSON.parse(new TextDecoder().decode(bytes));
 }
-function readHash() {
-  const m = location.hash.match(/[#&]p=([A-Za-z0-9_-]+)/);
+// 共有用のリンク（文字列）から計画を取り出す
+function planFromText(text) {
+  const m = String(text || '').match(/[#&]p=([A-Za-z0-9_-]+)/);
   if (!m) return null;
   try { return cleanPlan(decodePlan(m[1])); } catch (e) { return null; }
 }
+function readHash() { return planFromText(location.hash); }
 function readLocal() {
   const raw = store.get(LS_PLAN); if (!raw) return null;
   try { return cleanPlan(JSON.parse(raw)); } catch (e) { return null; }
 }
 const hasItems = p => p.days.some(d => d.items.length);
+const hasContent = p => hasItems(p) || p.custom.length > 0 || p.wish.length > 0;
+const samePlan = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function shareUrl() { return `${location.origin}${location.pathname}#p=${encodePlan(plan)}`; }
 function save() {
   store.set(LS_PLAN, JSON.stringify(plan));
@@ -1055,6 +1059,7 @@ function renderPlan() {
       <div class="btn-row" style="margin-top:8px">
         ${day.mode === 'drive' && c.pts.length >= 2 ? `<a class="btn" href="${routeUrl(c.pts)}" target="_blank" rel="noopener"${linkAttrs(appRoute(c.pts))}>ルート全体をGoogleマップで開く</a>` : ''}
         <button class="btn" data-act="share">この計画を共有</button>
+        <button class="btn" data-act="receive">計画を受け取る</button>
       </div>
       <p class="muted" style="margin:10px 0 0">変更は自動で保存されます（保存ボタンはありません）。</p>
     </div>`;
@@ -1194,6 +1199,115 @@ async function sharePlan() {
   try { await navigator.clipboard.writeText(url); toast('共有用のリンクをコピーしました'); }
   catch (e) { await ask({ title: '共有用のリンク', text: url, options: [], cancel: '閉じる' }); }
 }
+
+// ───────── 計画の受け取り（置き換える／相手の追加分だけ取り込む） ─────────
+// 相手の計画にあって、こちらに無い場所だけを足す。こちらの時刻・順番・済みの印は変えない。相手が消した場所も消さない
+function mergePlan(mine, theirs) {
+  const out = JSON.parse(JSON.stringify(mine));
+  const map = {};        // 相手の「追加した場所」のID → こちらのID
+  const newCustom = [];
+  theirs.custom.forEach(c => {
+    const same = out.custom.find(x => x.id === c.id || (c.pid && x.pid === c.pid) || (x.name === c.name && hav(x, c) < 0.05));
+    if (same) { map[c.id] = same.id; return; }
+    if (out.custom.length >= 30) return; // 追加できる場所の上限
+    out.custom.push({ ...c }); map[c.id] = c.id; newCustom.push(c.id);
+  });
+  const idOf = id => (STATIC[id] ? id : map[id]);
+  const inRoute = new Set(out.days.flatMap(d => d.items.map(it => it.id)));
+  let items = 0;
+  theirs.days.forEach((td, i) => {
+    const od = out.days[i]; if (!od) return;
+    const ids = td.items.map(it => idOf(it.id));
+    let prev = null; // 相手の並びで直前にあり、こちらのこの日にもある場所
+    td.items.forEach((it, k) => {
+      const id = ids[k]; if (!id) return;
+      if (inRoute.has(id)) { if (od.items.some(x => x.id === id)) prev = id; return; }
+      let at = od.items.length;
+      if (prev) at = od.items.findIndex(x => x.id === prev) + 1;
+      else {
+        const next = ids.slice(k + 1).find(n => n && od.items.some(x => x.id === n));
+        if (next) at = od.items.findIndex(x => x.id === next);
+      }
+      od.items.splice(at, 0, { id, stay: it.stay, skip: false, done: false });
+      inRoute.add(id); prev = id; items++;
+    });
+    Object.entries(td.manual).forEach(([k, v]) => { if (!(k in od.manual)) od.manual[k] = v; });
+  });
+  let cand = newCustom.filter(id => !inRoute.has(id)).length;
+  theirs.wish.forEach(id => { if (!out.wish.includes(id)) { out.wish.push(id); if (!inRoute.has(id)) cand++; } });
+  return { plan: cleanPlan(out), items, cand };
+}
+function planSummary(p) {
+  const inRoute = new Set(p.days.flatMap(d => d.items.map(it => it.id)));
+  const cand = p.custom.filter(c => !inRoute.has(c.id)).length + p.wish.filter(id => !inRoute.has(id)).length;
+  return `${p.days.map((d, i) => `${TRIP.days[i].label} ${d.items.length}か所`).join('・')}・候補 ${cand}か所`;
+}
+function readBackup() {
+  try { const o = JSON.parse(store.get(LS_BACKUP)); return o && o.plan ? { t: Number(o.t) || 0, plan: cleanPlan(o.plan) } : null; } catch (e) { return null; }
+}
+function applyPlan(next, msg) {
+  store.set(LS_BACKUP, JSON.stringify({ t: Date.now(), plan })); // 1つ前の計画を残す（「元に戻す」用）
+  plan = next; if (curDay >= plan.days.length) curDay = 0;
+  syncCustom(); save(); renderAll(); renderInfo(); fitCurrent(); queueRoutes();
+  if (msg) toast(msg, 4200);
+}
+let receiving = false;
+async function receivePlan(inc) {
+  if (!inc || receiving) return;
+  if (samePlan(inc, plan)) { save(); return toast('受け取った計画は、いまの計画と同じです'); }
+  if (!hasContent(plan)) return applyPlan(inc, '共有された計画を開きました');
+  receiving = true;
+  const m = mergePlan(plan, inc), n = m.items + m.cand;
+  const v = await ask({
+    title: '共有された計画を受け取りました',
+    options: [
+      ...(n ? [{ label: `相手の追加分だけ取り込む（${n}か所）`, value: 'merge', primary: true }] : []),
+      { label: '受け取った計画に置き換える', value: 'replace', primary: !n },
+      { label: 'いまの計画のままにする', value: 'keep' }
+    ], cancel: null,
+    onOpen: box => {
+      box.innerHTML = `<ul class="dlg-notes">
+        <li>受け取った計画：${esc(planSummary(inc))}</li>
+        <li>このスマホの計画：${esc(planSummary(plan))}</li>
+        ${n ? `<li><b>取り込む</b>：相手の計画にあって、このスマホに無い場所だけを足します（ルートに${m.items}か所、候補に${m.cand}か所）。時刻や順番は変わりません。相手が消した場所は消えません。</li>` : '<li>相手の計画に、このスマホに無い場所はありません。</li>'}
+        <li><b>置き換える</b>：このスマホの計画を、受け取った計画と同じにします。</li>
+        <li>どちらも「交通・設定」から、受け取る前の計画に戻せます。</li>
+      </ul>`;
+    }
+  });
+  receiving = false;
+  if (v === 'merge') applyPlan(m.plan, `${n}か所を取り込みました`);
+  else if (v === 'replace') applyPlan(inc, '受け取った計画に置き換えました');
+  else { save(); toast('いまの計画のままにしました'); }
+}
+async function pasteReceive() {
+  const text = await ask({
+    title: 'リンクを貼り付けて受け取る',
+    text: '相手から届いた共有用のリンクをコピーして、下の欄に貼り付けてください。',
+    options: [], cancel: 'やめる',
+    onOpen: (box, done) => {
+      box.innerHTML = `<div class="field" style="margin:0 0 12px"><input type="text" id="dlgText" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://… を貼り付け" aria-label="共有用のリンク"><button class="btn btn-primary" id="dlgOk">受け取る</button></div>`;
+      const inp = $('#dlgText', box);
+      const ok = () => { const v = inp.value.trim(); if (v) done(v); else inp.focus(); };
+      $('#dlgOk', box).addEventListener('click', ok);
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+      setTimeout(() => inp.focus(), 60);
+    }
+  });
+  if (!text) return;
+  const inc = planFromText(text);
+  if (!inc) return toast('リンクから計画を読み取れませんでした。リンク全体をコピーできているか確かめてください', 5000);
+  receivePlan(inc);
+}
+async function restoreBackup() {
+  const b = readBackup(); if (!b) return toast('戻せる計画がありません');
+  const v = await ask({
+    title: '受け取る前の計画に戻しますか？',
+    text: `戻す計画：${planSummary(b.plan)}。いまの計画は控えに回るので、もう一度押すと元に戻せます。`,
+    options: [{ label: '戻す', value: 'y', primary: true }]
+  });
+  if (v === 'y') applyPlan(b.plan, '受け取る前の計画に戻しました');
+}
 function modelCourse() {
   const mk = ids => ids.map(id => ({ id, stay: byId[id].stay, skip: false, done: false }));
   plan.days[0].items = mk(['ueda-castle', 'ueda-museum', 'kusabue', 'taiheiki', 'yanagimachi']);
@@ -1206,6 +1320,8 @@ function modelCourse() {
 // ───────── 交通・設定画面 ─────────
 function renderInfo() {
   const key = store.get(LS_KEY);
+  const backup = readBackup();
+  const backupAt = backup ? (d => `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`)(new Date(backup.t)) : '';
   const status = M.kind === 'google' ? ['is-ok', 'Googleマップで表示中です。']
     : key ? ['is-bad', 'キーは保存されていますが、Googleマップを読み込めていません（簡易地図で表示中）。']
       : ['', 'キーは未設定です（簡易地図で表示中）。'];
@@ -1225,7 +1341,13 @@ function renderInfo() {
     <div class="card">
       <h2>計画の保存と共有</h2>
       <p class="muted">計画はこのスマホに自動で保存されます。リンクを自分や同行者に送っておくと、同じ計画を開けます（保存が消えたときの控えにもなります）。</p>
-      <div class="btn-row"><button class="btn btn-primary" data-info="share">共有用のリンクを作る</button><button class="btn" data-info="reset">計画を空にする</button></div>
+      <ul class="info-list">
+        <li>渡す：「共有用のリンクを作る」から、AirDropやLINEなどで相手に送ります。</li>
+        <li>受け取る：届いたリンクを開くと、「相手の追加分だけ取り込む」か「置き換える」かを選べます。</li>
+        <li>リンクを開いても計画が入らないとき（ホーム画面のアイコンから使っている、LINEの中の画面で開いた、など）は、届いたリンクをコピーして「リンクを貼り付けて受け取る」を使います。</li>
+      </ul>
+      <div class="btn-row"><button class="btn btn-primary" data-info="share">共有用のリンクを作る</button><button class="btn" data-info="receive">リンクを貼り付けて受け取る</button></div>
+      <div class="btn-row" style="margin-top:8px">${backup ? `<button class="btn" data-info="restore">受け取る前の計画に戻す（${esc(backupAt)} より前の計画）</button>` : ''}<button class="btn" data-info="reset">計画を空にする</button></div>
     </div>
     <div class="card">
       <h2>Googleマップのキー</h2>
@@ -1364,6 +1486,7 @@ function bind() {
     else if (act === 'sort') return sortDay();
     else if (act === 'replan') return replanNow();
     else if (act === 'share') return sharePlan();
+    else if (act === 'receive') return pasteReceive();
     else if (act === 'clearReplan') { day.replan = null; day.items.forEach(x => { x.done = false; }); toast('組み直す前の予定に戻しました'); }
     else return;
     save(); renderAll(); queueRoutes();
@@ -1386,6 +1509,8 @@ function bind() {
     const b = e.target.closest('[data-info]'); if (!b) return;
     const act = b.dataset.info;
     if (act === 'share') return sharePlan();
+    if (act === 'receive') return pasteReceive();
+    if (act === 'restore') return restoreBackup();
     if (act === 'checkUpdate') return checkUpdate(true);
     if (act === 'copyKey') {
       const k = store.get(LS_KEY); if (!k) return;
@@ -1431,6 +1556,8 @@ function bind() {
     }, 2500);
   });
 
+  window.addEventListener('hashchange', () => { const inc = readHash(); if (inc && !samePlan(inc, plan)) receivePlan(inc); });
+
   window.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#dialog').hidden) $('#dialog [data-close]').click(); else if (!$('#detail').hidden) closeDetail(); } });
 }
 
@@ -1438,7 +1565,7 @@ function bind() {
 async function boot() {
   const fromHash = readHash(), local = readLocal();
   let pendingShared = null;
-  if (fromHash && local && hasItems(local) && JSON.stringify(fromHash) !== JSON.stringify(local)) { plan = local; pendingShared = fromHash; }
+  if (fromHash && local && hasContent(local) && !samePlan(fromHash, local)) { plan = local; pendingShared = fromHash; }
   else plan = fromHash || local || newPlan();
   syncCustom();
 
@@ -1447,15 +1574,8 @@ async function boot() {
   drawMap(); renderInfo(); fitCurrent(); queueRoutes();
   checkUpdate(false);
 
-  if (pendingShared) {
-    const v = await ask({
-      title: '共有された計画を開きますか？',
-      text: 'リンクに入っている計画が、このスマホに保存されている計画と違います。開くと、いまの計画は置き換わります。',
-      options: [{ label: 'リンクの計画を開く', value: 'y', primary: true }, { label: 'いまの計画のままにする', value: 'n' }], cancel: null
-    });
-    if (v === 'y') { plan = pendingShared; syncCustom(); }
-    save(); renderAll(); fitCurrent(); queueRoutes();
-  } else if (hasItems(plan)) save();
+  if (pendingShared) await receivePlan(pendingShared);
+  else if (hasContent(plan)) save();
 }
 boot();
 
