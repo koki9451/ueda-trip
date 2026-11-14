@@ -12,7 +12,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 13;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 14;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -210,6 +210,20 @@ const pidQ = (k, p) => p.pid ? `&${k}_place_id=${enc(p.pid)}` : '';
 const dirUrl = (a, b, mode, src) => `https://www.google.com/maps/dir/?api=1&origin=${enc(qOf(a))}${pidQ('origin', a)}&destination=${enc(qOf(b))}${pidQ('destination', b)}&travelmode=${tmode(mode, src)}`;
 const navUrl = (b, mode) => `https://www.google.com/maps/dir/?api=1&destination=${enc(qOf(b))}${pidQ('destination', b)}&travelmode=${tmode(mode)}`;
 const placeUrl = p => `https://www.google.com/maps/search/?api=1&query=${enc(qOf(p))}${pidQ('query', p)}`;
+// ── iPhone向け：Googleマップのアプリを直接開くためのアドレス（ウェブのリンク経由だとApp Storeへ飛ばされることがあるため）
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// アプリに渡す場所の書き方：用意したスポットは名前＋地域、場所IDつきは名前＋住所、それ以外は座標
+const appQ = p => p.gq ? gPlace(p) : (p.pid && (p.sub || p.addr)) ? `${p.name} ${p.sub || p.addr}` : `${p.lat},${p.lng}`;
+const appDir = (a, b, mode, src) => `comgooglemaps://?saddr=${a ? enc(appQ(a)) : ''}&daddr=${enc(appQ(b))}&directionsmode=${tmode(mode, src)}`;
+const appPlace = p => `comgooglemaps://?q=${enc(appQ(p))}&center=${p.lat},${p.lng}`;
+const appRoute = pts => `comgooglemaps://?saddr=${enc(appQ(pts[0]))}&daddr=${[...pts.slice(1, -1).slice(0, 9), pts[pts.length - 1]].map(p => enc(appQ(p))).join('+to:')}&directionsmode=driving`;
+// Googleマップのアプリが無いときの代わり：iPhone標準の「マップ」
+const amode = (mode, src) => src === 'walk' ? 'w' : (mode === 'drive' ? 'd' : 'r');
+const appleDir = (a, b, mode, src) => `https://maps.apple.com/?${a ? `saddr=${a.lat},${a.lng}&` : ''}daddr=${b.lat},${b.lng}&dirflg=${amode(mode, src)}`;
+const applePlace = p => `https://maps.apple.com/?q=${enc(p.name)}&ll=${p.lat},${p.lng}`;
+const linkAttrs = (app, apple) => ` data-app="${esc(app)}"${apple ? ` data-apple="${esc(apple)}"` : ''}`;
+let openUrl = u => { window.location.href = u; };
+
 function routeUrl(pts) {
   const mid = pts.slice(1, -1).slice(0, 9).map(gPlace).join('|');
   return `https://www.google.com/maps/dir/?api=1&origin=${enc(gPlace(pts[0]))}&destination=${enc(gPlace(pts[pts.length - 1]))}${mid ? `&waypoints=${enc(mid)}` : ''}&travelmode=driving`;
@@ -843,7 +857,7 @@ function openDetail(id) {
       ${video}
       <div class="d-h">リンク</div>
       <div class="btn-row">
-        <a class="btn btn-sm" href="${placeUrl(s)}" target="_blank" rel="noopener">Googleマップで開く</a>
+        <a class="btn btn-sm" href="${placeUrl(s)}" target="_blank" rel="noopener"${linkAttrs(appPlace(s), applePlace(s))}>Googleマップで開く</a>
         ${s.official ? `<a class="btn btn-sm" href="${esc(s.official)}" target="_blank" rel="noopener">公式サイト</a>` : ''}
         ${s.custom ? '<button class="btn btn-sm" data-delplace>この場所を削除</button>' : ''}
       </div>
@@ -912,7 +926,7 @@ function legHtml(day, x, isEnd) {
     <div class="tl-leg-l"></div><div class="tl-leg-bar"></div>
     <div class="tl-leg-c">
       ${main}${input}
-      <a class="btn btn-sm" href="${dirUrl(from, to, day.mode, leg.src)}" target="_blank" rel="noopener">${day.mode === 'transit' && !isWalk ? 'Googleマップで乗換を見る' : 'Googleマップで行き方'}</a>
+      <a class="btn btn-sm" href="${dirUrl(from, to, day.mode, leg.src)}" target="_blank" rel="noopener"${linkAttrs(appDir(from, to, day.mode, leg.src), appleDir(from, to, day.mode, leg.src))}>${day.mode === 'transit' && !isWalk ? 'Googleマップで乗換を見る' : 'Googleマップで行き方'}</a>
       ${hint}${hintEnd}
     </div>
   </li>`;
@@ -1005,7 +1019,7 @@ function renderPlan() {
       <div class="tl-card">
         <div class="tl-card-h"><span class="tl-num" style="background:${cat.color}">${r.n}</span>
           <button class="tl-title" data-spot="${s.id}">${esc(s.name)}${s.sub ? `<small>${esc(s.sub)}</small>` : ''}</button>
-          <a class="btn btn-sm" href="${navUrl(s, day.mode)}" target="_blank" rel="noopener">ナビ</a></div>
+          <a class="btn btn-sm" href="${navUrl(s, day.mode)}" target="_blank" rel="noopener"${linkAttrs(appDir(null, s, day.mode), appleDir(null, s, day.mode))}>ナビ</a></div>
         ${r.infos.map(x => `<div class="tl-info">${esc(x)}</div>`).join('')}
         ${r.warns.map(x => `<div class="tl-warn">${esc(x)}</div>`).join('')}
         ${ctl}
@@ -1023,7 +1037,7 @@ function renderPlan() {
         <button class="btn" data-act="sort">移動が短い順に並べ替え</button>
       </div>
       <div class="btn-row" style="margin-top:8px">
-        ${day.mode === 'drive' && c.pts.length >= 2 ? `<a class="btn" href="${routeUrl(c.pts)}" target="_blank" rel="noopener">ルート全体をGoogleマップで開く</a>` : ''}
+        ${day.mode === 'drive' && c.pts.length >= 2 ? `<a class="btn" href="${routeUrl(c.pts)}" target="_blank" rel="noopener"${linkAttrs(appRoute(c.pts))}>ルート全体をGoogleマップで開く</a>` : ''}
         <button class="btn" data-act="share">この計画を共有</button>
       </div>
       <p class="muted" style="margin:10px 0 0">変更は自動で保存されます（保存ボタンはありません）。</p>
@@ -1375,6 +1389,32 @@ function bind() {
     if (act === 'delKey') { store.del(LS_KEY); toast('キーを消しました。読み込み直します'); setTimeout(() => location.reload(), 700); }
   });
 
+  // iPhone：Googleマップへのリンクは、アプリを直接開く。開かなかったときだけ、代わりの開き方を出す
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[data-app]');
+    if (!a || !(isIOS || window.__forceIOS)) return;
+    e.preventDefault();
+    const web = a.href, apple = a.dataset.apple;
+    let left = false;
+    const onHide = () => { if (document.hidden) left = true; };
+    document.addEventListener('visibilitychange', onHide);
+    openUrl(a.dataset.app);
+    setTimeout(async () => {
+      document.removeEventListener('visibilitychange', onHide);
+      if (left || document.hidden) return; // アプリへ切り替わった
+      const v = await ask({
+        title: 'Googleマップのアプリが開きませんでしたか？',
+        text: 'アプリが入っていない場合は、別の方法で開けます。開けた場合は「閉じる」を押してください。',
+        options: [
+          ...(apple ? [{ label: 'iPhoneの「マップ」で開く', value: 'apple' }] : []),
+          { label: 'ブラウザでGoogleマップを開く', value: 'web' }
+        ], cancel: '閉じる'
+      });
+      if (v === 'apple') openUrl(apple);
+      else if (v === 'web') window.open(web, '_blank', 'noopener');
+    }, 2500);
+  });
+
   window.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#dialog').hidden) $('#dialog [data-close]').click(); else if (!$('#detail').hidden) closeDetail(); } });
 }
 
@@ -1404,6 +1444,6 @@ async function boot() {
 boot();
 
 // 動作確認用（地図の状態を外から見るための入口）
-window.__ueda = { map: () => M.map, kind: () => M.kind, estimate };
+window.__ueda = { map: () => M.map, kind: () => M.kind, estimate, setOpener: fn => { openUrl = fn; } };
 
 })();
