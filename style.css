@@ -139,6 +139,14 @@ main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b))
 .tag-few { background: var(--warn-bg); color: #8a4100; }
 .tag-car { background: var(--bad-bg); color: #8c1d18; }
 .tag-plain { background: #eeeae3; color: var(--sub); }
+.tag-wish { background: #fff1c2; color: #6b4b00; }
+.spot-in.is-wish { color: #6b4b00; background: #fff1c2; }
+.btn.is-wish { background: #fff1c2; border-color: #e3c56a; color: #6b4b00; }
+.wish-row { margin: 8px 0 0; min-height: 4px; }
+.wish-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.wish-item:first-of-type { border-top: 0; }
+.wish-item .tl-title { font-size: 14px; }
+.wish-item .btn { flex: none; white-space: nowrap; }
 
 /* ── ボタン ── */
 .btn {

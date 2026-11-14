@@ -12,7 +12,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 12;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 13;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -30,7 +30,7 @@ const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d
 // ───────── 計画データ ─────────
 function newPlan() {
   const base = TRIP.bases[0];
-  return { v: 1, custom: [], days: TRIP.days.map(() => ({ start: { ...base }, end: null, startTime: '09:00', endBy: '', mode: 'drive', items: [], manual: {}, replan: null })) };
+  return { v: 1, custom: [], wish: [], days: TRIP.days.map(() => ({ start: { ...base }, end: null, startTime: '09:00', endBy: '', mode: 'drive', items: [], manual: {}, replan: null })) };
 }
 function cleanPlan(p) {
   const fresh = newPlan();
@@ -47,6 +47,8 @@ function cleanPlan(p) {
       });
   }
   const known = { ...STATIC, ...Object.fromEntries(fresh.custom.map(c => [c.id, c])) };
+  // 行きたい候補（用意したスポットに付けた★）。自分で追加した場所は、ルートに入っていなければ自動で候補になる
+  if (Array.isArray(p.wish)) fresh.wish = [...new Set(p.wish.filter(id => typeof id === 'string' && STATIC[id]))].slice(0, 60);
   fresh.days.forEach((d, i) => {
     const src = p.days[i]; if (!src) return;
     if (okPt(src.start)) d.start = src.start;
@@ -108,6 +110,10 @@ function syncCustom() {
   (plan.custom || []).forEach(c => { byId[c.id] = customSpot(c); });
 }
 const allSpots = () => [...SPOTS, ...(plan.custom || []).map(c => byId[c.id]).filter(Boolean)];
+// 行きたい候補：ルートに入っていない「自分で追加した場所」と、★を付けた用意済みスポット
+const planIds = () => new Set(plan.days.flatMap(d => d.items.map(it => it.id)));
+const isWish = (s, inPlan = planIds()) => !inPlan.has(s.id) && (!!s.custom || (plan.wish || []).includes(s.id));
+const WISH_COLOR = '#c28a00';
 
 // ───────── 距離と移動時間 ─────────
 function hav(a, b) {
@@ -376,17 +382,22 @@ function setUser(p) {
 }
 
 function visibleSpots() {
-  const inPlan = new Set(plan.days.flatMap(d => d.items.map(it => it.id)));
-  return allSpots().filter(s => areaFilter === 'all' || (areaFilter === 'plan' ? inPlan.has(s.id) : s.area === areaFilter));
+  const inPlan = planIds();
+  return allSpots().filter(s => areaFilter === 'all' ? true
+    : areaFilter === 'plan' ? inPlan.has(s.id)
+      : areaFilter === 'wish' ? isWish(s, inPlan)
+        : s.area === areaFilter);
 }
 function drawMap() {
   if (!M.kind) return;
   clearMap();
   const c = compute(curDay);
   const order = new Map(); c.act.forEach((it, i) => order.set(it.id, i + 1));
+  const inPlan = planIds();
   visibleSpots().forEach(s => {
-    const n = order.get(s.id);
-    addMarker({ lat: s.lat, lng: s.lng, text: n || CATS[s.cat].mark, color: CATS[s.cat].color, big: !!n, title: s.name, onClick: () => openDetail(s.id) });
+    const n = order.get(s.id), wish = !n && isWish(s, inPlan);
+    // ルートに入っていれば番号、行きたい候補は金色の★、それ以外は種類の印
+    addMarker({ lat: s.lat, lng: s.lng, text: n || (wish ? '★' : CATS[s.cat].mark), color: wish ? WISH_COLOR : CATS[s.cat].color, big: !!n, title: s.name, onClick: () => openDetail(s.id) });
   });
   const day = plan.days[curDay];
   const bases = [c.origin]; if (day.end && pkey(day.end) !== pkey(c.origin)) bases.push(day.end);
@@ -447,18 +458,29 @@ async function addPlaceDialog() {
     $('#pickBar').hidden = false; setSheet('peek'); switchView('map');
   }
 }
-function addCustom({ name, lat, lng, addr = '', pid = '', stay = 30 }) {
+// 追加する場所の行き先を選ぶ：どちらかの日のルートに入れるか、ルートに入れない「行きたい候補」にするか
+function chooseDest(name, hint) {
+  return ask({
+    title: `「${name}」をどこに入れますか？`, text: hint || '',
+    options: [
+      ...TRIP.days.map((d, i) => ({ label: `${d.label}（${d.wd}）のルートに入れる`, value: i, primary: i === curDay })),
+      { label: '★ 行きたい候補にする（ルートには入れない）', value: 'wish' }
+    ]
+  });
+}
+async function addCustom({ name, lat, lng, addr = '', pid = '', stay = 30, hint = '' }) {
   const dup = pid && (plan.custom || []).find(c => c.pid === pid);
   if (dup) { openDetail(dup.id); return toast('この場所はすでに追加されています'); }
   if ((plan.custom || []).length >= 30) return toast('追加できるのは30か所までです');
+  const dest = await chooseDest(name, hint);
+  if (dest == null) return;
   const c = { id: 'c' + Date.now().toString(36), name: String(name).slice(0, 60), lat, lng, addr: String(addr || '').slice(0, 120), stay };
   if (pid) c.pid = pid;
   plan.custom = [...(plan.custom || []), c];
-  // いま選んでいる日の予定に、そのまま入れる（別の日にしたいときは詳細カードで移せる）
-  plan.days[curDay].items.push({ id: c.id, stay: c.stay, skip: false, done: false });
+  if (dest !== 'wish') { plan.days[dest].items.push({ id: c.id, stay: c.stay, skip: false, done: false }); curDay = dest; }
   syncCustom(); save(); renderAll(); queueRoutes();
   openDetail(c.id);
-  toast(`「${c.name}」を${TRIP.days[curDay].label}の予定に追加しました`, 3600);
+  toast(dest === 'wish' ? `「${c.name}」を行きたい候補にしました（地図に★が付きます）` : `「${c.name}」を${TRIP.days[dest].label}のルートに入れました`, 3600);
 }
 // 地図上のお店などのアイコンをタップしたとき
 async function onPoiClick(pid, lat, lng) {
@@ -478,11 +500,10 @@ async function onPoiClick(pid, lat, lng) {
   toast('場所の情報を取得しています…');
   const info = await loadPlaceInfo(pid);
   if (!info || info.failed || !info.name) return addByTap(Number(lat.toFixed(6)), Number(lng.toFixed(6)));
-  const v = await ask({
-    title: info.name, text: [info.typeName, info.addr].filter(Boolean).join('／'),
-    options: [{ label: 'この場所を追加する', value: 'y', primary: true }]
+  addCustom({
+    name: info.name, lat: Number((info.lat ?? lat).toFixed(6)), lng: Number((info.lng ?? lng).toFixed(6)), addr: info.addr, pid,
+    stay: stayByTypes(info.types), hint: [info.typeName, info.addr].filter(Boolean).join('／')
   });
-  if (v === 'y') addCustom({ name: info.name, lat: Number((info.lat ?? lat).toFixed(6)), lng: Number((info.lng ?? lng).toFixed(6)), addr: info.addr, pid, stay: stayByTypes(info.types) });
 }
 // 地図の何もない所をタップしたとき：近くの場所の候補を出す（取れなければ名前を手入力）
 async function addByTap(lat, lng) {
@@ -716,13 +737,14 @@ const TRANSIT_TAG = { good: ['tag-good', '公共交通で行きやすい'], few:
 function dayOf(id) { return plan.days.findIndex(d => d.items.some(it => it.id === id)); }
 
 function renderChips() {
-  const chips = [['all', 'すべて'], ...Object.entries(AREAS).filter(([k]) => k !== 'custom' || (plan.custom || []).length).map(([k, v]) => [k, v.name]), ['plan', '予定に入れた']];
+  const chips = [['all', 'すべて'], ...Object.entries(AREAS).filter(([k]) => k !== 'custom' || (plan.custom || []).length).map(([k, v]) => [k, v.name]), ['wish', '★ 候補'], ['plan', 'ルートに入れた']];
   $('#areaChips').innerHTML = chips.map(([k, n]) => `<button class="chip ${areaFilter === k ? 'is-on' : ''}" data-area="${k}">${esc(n)}</button>`).join('');
 }
 function renderList() {
   const list = visibleSpots();
   $('#listCount').textContent = `${list.length}件`;
-  $('#listTitle').textContent = areaFilter === 'all' ? 'スポット' : (areaFilter === 'plan' ? '予定に入れたスポット' : AREAS[areaFilter].name);
+  $('#listTitle').textContent = areaFilter === 'all' ? 'スポット' : areaFilter === 'plan' ? 'ルートに入れたスポット' : areaFilter === 'wish' ? '★ 行きたい候補' : AREAS[areaFilter].name;
+  const inPlan = planIds();
   const groups = Object.keys(AREAS).map(a => [a, list.filter(s => s.area === a)]).filter(([, l]) => l.length);
   $('#spotList').innerHTML = groups.length ? groups.map(([a, l]) => `
     <div class="area-h">${esc(AREAS[a].name)}　<span class="muted">${esc(AREAS[a].note)}</span></div>
@@ -734,9 +756,11 @@ function renderList() {
           <span class="spot-name">${esc(s.name)}</span>
           <span class="spot-meta"><span>目安 ${dur(s.stay)}</span><span class="tag ${tg[0]}">${tg[1]}</span></span>
         </span>
-        ${d >= 0 ? `<span class="spot-in">${TRIP.days[d].label}</span>` : ''}
+        ${d >= 0 ? `<span class="spot-in">${TRIP.days[d].label}</span>` : (isWish(s, inPlan) ? '<span class="spot-in is-wish">★ 候補</span>' : '')}
       </button>`;
-    }).join('')}`).join('') : '<div class="empty"><p>まだ予定に入れたスポットがありません。</p></div>';
+    }).join('')}`).join('') : `<div class="empty"><p>${areaFilter === 'wish'
+      ? '行きたい候補はまだありません。<br>場所を追加するときに「★ 行きたい候補にする」を選ぶか、スポットの詳細で「☆ 行きたい候補にする」を押すと、ここに並びます。'
+      : 'まだルートに入れたスポットがありません。'}</p></div>`;
   $('#spotList').insertAdjacentHTML('beforeend', '<button class="btn btn-block" data-addplace style="margin:14px 0 4px">＋ 場所を追加（お店・ホテルなど）</button>');
 }
 
@@ -804,6 +828,7 @@ function openDetail(id) {
       <span class="d-cat" style="background:${cat.color}">${cat.name}</span>
       <span class="muted">　${esc(AREAS[s.area].name)}</span>
       <h2 class="d-name" id="detailName">${esc(s.name)}</h2>
+      <div id="wishRow" class="wish-row"></div>
       ${s.sub && !s.custom ? `<div class="d-sub">${esc(s.sub)}</div>` : ''}
       <p class="d-intro">${s.custom ? '自分で追加した場所です。' : esc(s.intro)}</p>
       ${s.points.length ? `<div class="d-h">おすすめポイント</div>
@@ -838,16 +863,30 @@ function openDetail(id) {
   if (s.custom && !s.pid && M.kind === 'google') autoLink(id);
 }
 function renderDetailActions(id) {
-  const d = dayOf(id);
+  const d = dayOf(id), s = byId[id];
+  if (!s) return;
   $('#detailActions').innerHTML = TRIP.days.map((day, i) => i === d
     ? `<button class="btn" data-remove="${i}">${day.label}から外す</button>`
     : `<button class="btn btn-primary" data-add="${i}">${day.label}に${d >= 0 ? '移す' : '追加'}</button>`).join('');
+  // いまの扱い（ルートに入っている／行きたい候補／どちらでもない）
+  const row = $('#wishRow'); if (!row) return;
+  if (d >= 0) row.innerHTML = `<span class="tag tag-good">${TRIP.days[d].label}のルートに入っています</span>`;
+  else if (s.custom) row.innerHTML = '<span class="tag tag-wish">★ 行きたい候補</span> <span class="muted">ルートには入っていません。地図に★で表示されます。</span>';
+  else if ((plan.wish || []).includes(id)) row.innerHTML = '<button class="btn btn-sm is-wish" data-wish>★ 行きたい候補（タップで外す）</button>';
+  else row.innerHTML = '<button class="btn btn-sm" data-wish>☆ 行きたい候補にする</button>';
 }
 function addToDay(id, di) {
   plan.days.forEach(d => { d.items = d.items.filter(it => it.id !== id); });
   plan.days[di].items.push({ id, stay: byId[id].stay, skip: false, done: false });
+  plan.wish = (plan.wish || []).filter(x => x !== id); // ルートに入れたら候補の★は外す
   curDay = di; save(); renderAll(); queueRoutes();
-  toast(`${TRIP.days[di].label}に追加しました`);
+  toast(`${TRIP.days[di].label}のルートに入れました`);
+}
+function toggleWish(id) {
+  const on = (plan.wish || []).includes(id);
+  plan.wish = on ? plan.wish.filter(x => x !== id) : [...(plan.wish || []), id];
+  save(); renderAll();
+  toast(on ? '行きたい候補から外しました' : '行きたい候補にしました（地図に★が付きます）');
 }
 function removeFromPlan(id) {
   plan.days.forEach(d => { d.items = d.items.filter(it => it.id !== id); });
@@ -879,6 +918,19 @@ function legHtml(day, x, isEnd) {
   </li>`;
 }
 
+// スケジュール画面の下に出す「行きたい候補」。その日のルートへすぐ入れられる
+function wishCardHtml() {
+  const inPlan = planIds(), list = allSpots().filter(s => isWish(s, inPlan));
+  if (!list.length) return '';
+  return `<div class="card">
+    <h2>★ 行きたい候補（ルートに入れていない場所）</h2>
+    ${list.map(s => `<div class="wish-item">
+      <button class="tl-title" data-spot="${s.id}">${esc(s.name)}<small>${esc(AREAS[s.area].name)}・目安 ${dur(s.stay)}</small></button>
+      <button class="btn btn-sm" data-act="addWish" data-id="${s.id}">${TRIP.days[curDay].label}に入れる</button>
+    </div>`).join('')}
+  </div>`;
+}
+
 function renderPlan() {
   const di = curDay, day = plan.days[di], td = TRIP.days[di], c = compute(di);
   const end = day.end || day.start;
@@ -904,7 +956,7 @@ function renderPlan() {
           <button class="btn btn-primary" data-act="goMap">地図でスポットを選ぶ</button>
           ${hasItems(plan) ? '' : '<button class="btn" data-act="model">モデルコースを入れてみる</button>'}
         </div>
-      </div>`;
+      </div>` + wishCardHtml();
     updateBadge(); return;
   }
 
@@ -977,7 +1029,7 @@ function renderPlan() {
       <p class="muted" style="margin:10px 0 0">変更は自動で保存されます（保存ボタンはありません）。</p>
     </div>`;
 
-  $('#planPage').innerHTML = settings + summary + alerts.join('') + `<ol class="tl">${tl}</ol>` + actions;
+  $('#planPage').innerHTML = settings + summary + alerts.join('') + `<ol class="tl">${tl}</ol>` + actions + wishCardHtml();
   updateBadge();
 }
 function updateBadge() {
@@ -1239,8 +1291,9 @@ function bind() {
         .then(v => { if (v === 'y') deleteCustom(id); });
       return;
     }
+    if (e.target.closest('[data-wish]')) return toggleWish(id);
     if (add) { addToDay(id, Number(add.dataset.add)); closeDetail(); }
-    else if (rm) { removeFromPlan(id); toast('予定から外しました'); }
+    else if (rm) { removeFromPlan(id); toast(byId[id] && byId[id].custom ? 'ルートから外しました（★候補として地図に残ります）' : 'ルートから外しました', 3200); }
     else if (play) {
       const box = play.closest('.d-video');
       box.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${enc(play.dataset.play)}?autoplay=1&playsinline=1" title="関連動画" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
@@ -1254,6 +1307,7 @@ function bind() {
     if (md) { plan.days[curDay].mode = md.dataset.mode; save(); renderAll(); queueRoutes(); return; }
     const b = e.target.closest('[data-act]'); if (!b) return;
     const day = plan.days[curDay], act = b.dataset.act, id = b.dataset.id, it = day.items.find(x => x.id === id);
+    if (act === 'addWish') return addToDay(id, curDay);
     if (act === 'stay' && it) it.stay = Math.max(5, it.stay + Number(b.dataset.d));
     else if (act === 'up') moveItem(id, -1);
     else if (act === 'down') moveItem(id, 1);
