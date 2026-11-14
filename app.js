@@ -12,7 +12,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 10;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 11;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -128,8 +128,11 @@ function estimate(a, b, mode) {
     return { min: Math.max(2, Math.round(walkKm / 4.5 * 60)), src: 'walk', km: walkKm, buf: 0 };
   }
   if (mode === 'drive') {
-    const road = d * 1.35, sp = road < 4 ? 28 : 38;
-    return { min: Math.max(4, Math.round(road / sp * 60)), src: 'est', km: road, buf: DRIVE_BUFFER };
+    // 概算：道のり＝直線距離×1.35。4km未満は時速28km、40kmまでは時速38km（市内・郊外の一般道）、
+    // 40kmを超える分は時速75km（高速道路を使う想定）。岐阜駅→上田駅でGoogleの計算（3時間53分）に対し約3時間40分になる
+    const road = d * 1.35;
+    const min = road < 4 ? road / 28 * 60 : Math.min(road, 40) / 38 * 60 + Math.max(0, road - 40) / 75 * 60;
+    return { min: Math.max(4, Math.round(min)), src: road > 40 ? 'esthw' : 'est', km: road, buf: DRIVE_BUFFER };
   }
   return { min: null, src: 'none', km: d * 1.35, buf: 0 };
 }
@@ -853,7 +856,7 @@ function removeFromPlan(id) {
 function closeDetail() { $('#detail').hidden = true; $('#detailBody').innerHTML = ''; }
 
 // ───────── スケジュール画面 ─────────
-const SRC_LABEL = { walk: '徒歩・概算', est: '概算', google: 'Googleの計算', gtransit: 'Googleの乗換', manual: '手入力', none: '' };
+const SRC_LABEL = { walk: '徒歩・概算', est: '概算', esthw: '概算（高速道路を使う想定）', google: 'Googleの計算', gtransit: 'Googleの乗換', manual: '手入力', none: '' };
 
 function legHtml(day, x, isEnd) {
   const { leg, from } = x, to = isEnd ? x.to : x.s;
@@ -1337,6 +1340,6 @@ async function boot() {
 boot();
 
 // 動作確認用（地図の状態を外から見るための入口）
-window.__ueda = { map: () => M.map, kind: () => M.kind };
+window.__ueda = { map: () => M.map, kind: () => M.kind, estimate };
 
 })();
