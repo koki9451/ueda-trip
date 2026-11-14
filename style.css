@@ -294,6 +294,15 @@ main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b))
   max-width: calc(100% - 28px); text-align: center; box-shadow: 0 3px 12px rgba(0,0,0,.3);
 }
 
+/* 新しい版のお知らせ */
+.updatebar {
+  position: fixed; left: 10px; right: 10px; bottom: calc(var(--tab-h) + var(--safe-b) + 10px); z-index: 45;
+  background: #123f7a; color: #fff; border-radius: 12px; padding: 8px 8px 8px 14px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; font-weight: 700;
+  box-shadow: 0 3px 12px rgba(0,0,0,.3); max-width: 660px; margin: 0 auto;
+}
+.updatebar .btn { flex: none; white-space: nowrap; }
+
 /* 場所検索（Googleの部品） */
 .pac-wrap { margin: 4px 0 12px; }
 gmp-place-autocomplete { width: 100%; }

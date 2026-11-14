@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 
@@ -56,6 +56,11 @@
   </section>
 </main>
 
+<div class="updatebar" id="updateBar" hidden>
+  <span>新しい版があります</span>
+  <button class="btn btn-sm" id="btnUpdate">更新する</button>
+</div>
+
 <nav class="tabbar" aria-label="画面の切り替え">
   <button class="tab is-active" data-view="map"><span class="tab-i" aria-hidden="true">◎</span>地図</button>
   <button class="tab" data-view="plan"><span class="tab-i" aria-hidden="true">≡</span>スケジュール<span class="tab-badge" id="planBadge" hidden></span></button>
@@ -81,7 +86,7 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="spots.js?v=9"></script>
-<script src="app.js?v=9"></script>
+<script src="spots.js?v=10"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
