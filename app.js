@@ -3,7 +3,10 @@
 'use strict';
 
 const TRIP = window.TRIP, SPOTS = window.SPOTS, CATS = window.CATS, AREAS = window.AREAS;
-const byId = Object.fromEntries(SPOTS.map(s => [s.id, s]));
+const STATIC = Object.fromEntries(SPOTS.map(s => [s.id, s]));
+const byId = { ...STATIC }; // 用意したスポット＋自分で追加した場所（syncCustom で登録）
+CATS.custom = { name: '追加した場所', color: '#5b4a9e', mark: '追' };
+AREAS.custom = { name: '追加した場所', note: '自分で追加した場所です。' };
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,21 +29,28 @@ const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d
 // ───────── 計画データ ─────────
 function newPlan() {
   const base = TRIP.bases[0];
-  return { v: 1, days: TRIP.days.map(() => ({ start: { ...base }, end: null, startTime: '09:00', endBy: '', mode: 'drive', items: [], manual: {}, replan: null })) };
+  return { v: 1, custom: [], days: TRIP.days.map(() => ({ start: { ...base }, end: null, startTime: '09:00', endBy: '', mode: 'drive', items: [], manual: {}, replan: null })) };
 }
 function cleanPlan(p) {
   const fresh = newPlan();
   if (!p || !Array.isArray(p.days)) return fresh;
+  const okPt = x => x && typeof x.lat === 'number' && typeof x.lng === 'number' && x.name;
+  if (Array.isArray(p.custom)) {
+    fresh.custom = p.custom
+      .filter(c => okPt(c) && typeof c.id === 'string' && /^c[a-z0-9]+$/.test(c.id) && !STATIC[c.id])
+      .slice(0, 30)
+      .map(c => ({ id: c.id, name: String(c.name).slice(0, 60), lat: c.lat, lng: c.lng, addr: String(c.addr || '').slice(0, 120), stay: Math.max(5, Number(c.stay) || 30) }));
+  }
+  const known = { ...STATIC, ...Object.fromEntries(fresh.custom.map(c => [c.id, c])) };
   fresh.days.forEach((d, i) => {
     const src = p.days[i]; if (!src) return;
-    const okPt = x => x && typeof x.lat === 'number' && typeof x.lng === 'number' && x.name;
     if (okPt(src.start)) d.start = src.start;
     if (okPt(src.end)) d.end = src.end;
     if (/^\d{1,2}:\d{2}$/.test(src.startTime || '')) d.startTime = src.startTime;
     if (/^\d{1,2}:\d{2}$/.test(src.endBy || '')) d.endBy = src.endBy;
     if (src.mode === 'drive' || src.mode === 'transit') d.mode = src.mode;
     if (Array.isArray(src.items)) {
-      d.items = src.items.filter(it => it && byId[it.id]).map(it => ({ id: it.id, stay: Math.max(5, Number(it.stay) || byId[it.id].stay), skip: !!it.skip, done: !!it.done }));
+      d.items = src.items.filter(it => it && known[it.id]).map(it => ({ id: it.id, stay: Math.max(5, Number(it.stay) || known[it.id].stay), skip: !!it.skip, done: !!it.done }));
     }
     if (src.manual && typeof src.manual === 'object') {
       Object.entries(src.manual).forEach(([k, v]) => { if (Number.isFinite(Number(v))) d.manual[k] = Number(v); });
@@ -78,7 +88,21 @@ function save() {
 let plan = newPlan();
 let curDay = 0;
 let areaFilter = 'all';
-let pick = null; // 地図で地点を選ぶモード {di, which}
+let pick = null; // 地図で地点を選ぶモード {di, which}（which が 'add' のときは場所の追加）
+
+// 自分で追加した場所を、用意したスポットと同じ形にして登録する
+function customSpot(c) {
+  return {
+    id: c.id, name: c.name, sub: c.addr || '', area: 'custom', cat: 'custom', lat: c.lat, lng: c.lng,
+    intro: '', points: [], sanada: null, stay: c.stay, outdoor: false, hours: '', fee: '', parking: '',
+    transit: { level: 'custom', text: '' }, caution: [], check: [], official: '', photo: null, video: null, custom: true
+  };
+}
+function syncCustom() {
+  Object.keys(byId).forEach(k => { if (!STATIC[k]) delete byId[k]; });
+  (plan.custom || []).forEach(c => { byId[c.id] = customSpot(c); });
+}
+const allSpots = () => [...SPOTS, ...(plan.custom || []).map(c => byId[c.id]).filter(Boolean)];
 
 // ───────── 距離と移動時間 ─────────
 function hav(a, b) {
@@ -330,7 +354,7 @@ function setUser(p) {
 
 function visibleSpots() {
   const inPlan = new Set(plan.days.flatMap(d => d.items.map(it => it.id)));
-  return SPOTS.filter(s => areaFilter === 'all' || (areaFilter === 'plan' ? inPlan.has(s.id) : s.area === areaFilter));
+  return allSpots().filter(s => areaFilter === 'all' || (areaFilter === 'plan' ? inPlan.has(s.id) : s.area === areaFilter));
 }
 function drawMap() {
   if (!M.kind) return;
@@ -355,6 +379,12 @@ function drawMap() {
 
 function onMapClick(lat, lng) {
   if (!pick) return;
+  if (pick.which === 'add') {
+    endPick();
+    askText({ title: '場所の名前', text: '追加する場所の名前を入れてください。', placeholder: '例：泊まるホテル、気になるカフェ' })
+      .then(name => { if (name) addCustom(name, Number(lat.toFixed(6)), Number(lng.toFixed(6)), ''); });
+    return;
+  }
   const day = plan.days[pick.di];
   const pt = { name: '地図で選んだ地点', lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
   if (pick.which === 'start') day.start = pt; else day.end = pt;
@@ -369,6 +399,51 @@ function startPick(di, which) {
   $('#pickBar').hidden = false; setSheet('peek'); switchView('map');
 }
 function endPick() { pick = null; $('#pickBar').hidden = true; }
+
+// ───────── 場所の追加（自分で足すスポット） ─────────
+function askText({ title, text, placeholder = '', value = '' }) {
+  return ask({
+    title, text, options: [], cancel: 'やめる',
+    onOpen: (box, done) => {
+      box.innerHTML = `<div class="field" style="margin:0 0 12px"><input type="text" id="dlgText" maxlength="60" placeholder="${esc(placeholder)}" value="${esc(value)}" aria-label="${esc(title)}"><button class="btn btn-primary" id="dlgOk">決定</button></div>`;
+      const inp = $('#dlgText', box);
+      const ok = () => { const v = inp.value.trim(); if (v) done(v); else inp.focus(); };
+      $('#dlgOk', box).addEventListener('click', ok);
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter') ok(); });
+      setTimeout(() => inp.focus(), 60);
+    }
+  });
+}
+async function addPlaceDialog() {
+  const v = await ask({
+    title: '場所を追加',
+    text: M.kind === 'google' ? 'お店やホテルの名前で検索するか、地図をタップして追加できます。' : '地図をタップして追加できます（Googleマップのキーを入れると、名前で検索できます）。',
+    options: [{ label: '地図をタップして追加', value: { t: 'pick' } }],
+    onOpen: (box, done) => { if (M.kind === 'google') mountPlaceSearch(box, done); }
+  });
+  if (!v) return;
+  if (v.t === 'place') return addCustom(v.p.name, v.p.lat, v.p.lng, v.p.addr || '');
+  if (v.t === 'pick') {
+    pick = { which: 'add' };
+    $('#pickText').textContent = '追加したい場所を地図でタップしてください';
+    $('#pickBar').hidden = false; setSheet('peek'); switchView('map');
+  }
+}
+function addCustom(name, lat, lng, addr) {
+  if ((plan.custom || []).length >= 30) return toast('追加できるのは30か所までです');
+  const c = { id: 'c' + Date.now().toString(36), name: String(name).slice(0, 60), lat, lng, addr: String(addr || '').slice(0, 120), stay: 30 };
+  plan.custom = [...(plan.custom || []), c];
+  syncCustom(); save(); renderAll();
+  openDetail(c.id);
+  toast('場所を追加しました。日にちを選ぶと予定に入ります', 3600);
+}
+function deleteCustom(id) {
+  plan.custom = (plan.custom || []).filter(c => c.id !== id);
+  plan.days.forEach(d => { d.items = d.items.filter(it => it.id !== id); });
+  if (areaFilter === 'custom' && !plan.custom.length) areaFilter = 'all';
+  syncCustom(); save(); closeDetail(); renderAll(); queueRoutes();
+  toast('場所を削除しました');
+}
 
 // ───────── Googleのルート計算（Routes API） ─────────
 const wp = p => ({ location: { latLng: { latitude: p.lat, longitude: p.lng } } });
@@ -443,11 +518,11 @@ let routeTimer = null;
 function queueRoutes() { clearTimeout(routeTimer); routeTimer = setTimeout(() => refreshRoutes(curDay), 700); }
 
 // ───────── 一覧（地図タブ） ─────────
-const TRANSIT_TAG = { good: ['tag-good', '公共交通で行きやすい'], few: ['tag-few', '本数少ない'], car: ['tag-car', '車・タクシー向き'] };
+const TRANSIT_TAG = { good: ['tag-good', '公共交通で行きやすい'], few: ['tag-few', '本数少ない'], car: ['tag-car', '車・タクシー向き'], custom: ['tag-plain', '自分で追加'] };
 function dayOf(id) { return plan.days.findIndex(d => d.items.some(it => it.id === id)); }
 
 function renderChips() {
-  const chips = [['all', 'すべて'], ...Object.entries(AREAS).map(([k, v]) => [k, v.name]), ['plan', '予定に入れた']];
+  const chips = [['all', 'すべて'], ...Object.entries(AREAS).filter(([k]) => k !== 'custom' || (plan.custom || []).length).map(([k, v]) => [k, v.name]), ['plan', '予定に入れた']];
   $('#areaChips').innerHTML = chips.map(([k, n]) => `<button class="chip ${areaFilter === k ? 'is-on' : ''}" data-area="${k}">${esc(n)}</button>`).join('');
 }
 function renderList() {
@@ -468,6 +543,7 @@ function renderList() {
         ${d >= 0 ? `<span class="spot-in">${TRIP.days[d].label}</span>` : ''}
       </button>`;
     }).join('')}`).join('') : '<div class="empty"><p>まだ予定に入れたスポットがありません。</p></div>';
+  $('#spotList').insertAdjacentHTML('beforeend', '<button class="btn btn-block" data-addplace style="margin:14px 0 4px">＋ 場所を追加（お店・ホテルなど）</button>');
 }
 
 // シートの開閉（タップで3段階、ドラッグにも対応）
@@ -514,27 +590,30 @@ function openDetail(id) {
     </div>
     <div class="d-vmeta">${esc(s.video.title)}（${esc(s.video.channel)}・${s.video.official ? '公式' : '一般の投稿'}）
       <a href="https://www.youtube.com/watch?v=${esc(s.video.id)}" target="_blank" rel="noopener">YouTubeで開く</a></div>` : '';
-  const facts = [
+  const facts = (s.custom ? [
+    ['滞在の目安', `${dur(s.stay)}（スケジュールで変えられます）`],
+    s.sub ? ['住所', s.sub] : null
+  ] : [
     ['滞在の目安', dur(s.stay)],
     ['時間', s.hours],
     s.fee ? ['料金', s.fee] : null,
     ['駐車場', s.parking],
     ['公共交通', `<span class="tag ${tg[0]}">${tg[1]}</span><br>${esc(s.transit.text)}`],
     s.tel ? ['電話', `<a href="tel:${esc(s.tel)}">${esc(s.tel)}</a>${s.telLabel ? `（${esc(s.telLabel)}）` : ''}`] : null
-  ].filter(Boolean);
+  ]).filter(Boolean);
   $('#detailBody').innerHTML = `
     ${photo}
     <div class="d-inner">
       <span class="d-cat" style="background:${cat.color}">${cat.name}</span>
       <span class="muted">　${esc(AREAS[s.area].name)}</span>
       <h2 class="d-name" id="detailName">${esc(s.name)}</h2>
-      ${s.sub ? `<div class="d-sub">${esc(s.sub)}</div>` : ''}
-      <p class="d-intro">${esc(s.intro)}</p>
-      <div class="d-h">おすすめポイント</div>
-      <ol class="d-points">${s.points.map(p => `<li>${esc(p)}</li>`).join('')}</ol>
+      ${s.sub && !s.custom ? `<div class="d-sub">${esc(s.sub)}</div>` : ''}
+      <p class="d-intro">${s.custom ? '自分で追加した場所です。営業時間などの情報は入っていないので、Googleマップで確認してください。' : esc(s.intro)}</p>
+      ${s.points.length ? `<div class="d-h">おすすめポイント</div>
+      <ol class="d-points">${s.points.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
       ${s.sanada ? `<div class="d-h">真田との関わり</div>
         <div class="d-sanada"><span class="tag tag-plain">${esc(s.sanada.type)}</span> ${esc(s.sanada.text)}</div>` : ''}
-      <div class="d-h">基本情報（11/22・23）</div>
+      <div class="d-h">${s.custom ? '基本情報' : '基本情報（11/22・23）'}</div>
       <dl class="d-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${k === '公共交通' || k === '電話' ? v : esc(v)}</dd>`).join('')}</dl>
       ${s.caution && s.caution.length ? `<div class="d-note is-warn"><ul>${s.caution.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
       ${s.check && s.check.length ? `<div class="d-note is-check"><b>要確認</b><ul>${s.check.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
@@ -542,7 +621,8 @@ function openDetail(id) {
       <div class="d-h">リンク</div>
       <div class="btn-row">
         <a class="btn btn-sm" href="${placeUrl(s)}" target="_blank" rel="noopener">Googleマップで開く</a>
-        <a class="btn btn-sm" href="${esc(s.official)}" target="_blank" rel="noopener">公式サイト</a>
+        ${s.official ? `<a class="btn btn-sm" href="${esc(s.official)}" target="_blank" rel="noopener">公式サイト</a>` : ''}
+        ${s.custom ? '<button class="btn btn-sm" data-delplace>この場所を削除</button>' : ''}
       </div>
     </div>
     <div class="d-actions"><div class="btn-row" id="detailActions"></div></div>`;
@@ -581,8 +661,8 @@ function legHtml(day, x, isEnd) {
   else main = `<b>${icon} ${dur(leg.min)}</b>${leg.buf ? `<span>＋駐車など${leg.buf}分</span>` : ''}<span class="leg-src">${SRC_LABEL[leg.src]}</span>`;
   const input = (day.mode === 'transit' && !isWalk) || leg.src === 'manual'
     ? `<label>分数 <input type="number" inputmode="numeric" min="0" max="600" data-leg="${esc(leg.key)}" value="${leg.src === 'manual' ? leg.min : ''}" placeholder="${leg.min != null && leg.src !== 'manual' ? leg.min : ''}" aria-label="移動時間（分）"></label>` : '';
-  const hint = day.mode === 'transit' && !isWalk && !isEnd && to.transit ? `<div class="leg-hint">行き方：${esc(to.transit.text)}</div>` : '';
-  const hintEnd = day.mode === 'transit' && !isWalk && isEnd && from.transit ? `<div class="leg-hint">帰り：${esc(from.transit.text)}</div>` : '';
+  const hint = day.mode === 'transit' && !isWalk && !isEnd && to.transit && to.transit.text ? `<div class="leg-hint">行き方：${esc(to.transit.text)}</div>` : '';
+  const hintEnd = day.mode === 'transit' && !isWalk && isEnd && from.transit && from.transit.text ? `<div class="leg-hint">帰り：${esc(from.transit.text)}</div>` : '';
   return `<li class="tl-leg">
     <div class="tl-leg-l"></div><div class="tl-leg-bar"></div>
     <div class="tl-leg-c">
@@ -688,6 +768,7 @@ function renderPlan() {
         ${day.mode === 'drive' && c.pts.length >= 2 ? `<a class="btn" href="${routeUrl(c.pts)}" target="_blank" rel="noopener">ルート全体をGoogleマップで開く</a>` : ''}
         <button class="btn" data-act="share">この計画を共有</button>
       </div>
+      <p class="muted" style="margin:10px 0 0">変更は自動で保存されます（保存ボタンはありません）。</p>
     </div>`;
 
   $('#planPage').innerHTML = settings + summary + alerts.join('') + `<ol class="tl">${tl}</ol>` + actions;
@@ -742,7 +823,7 @@ async function mountPlaceSearch(box, done) {
         const place = placePrediction.toPlace();
         await place.fetchFields({ fields: ['displayName', 'formattedAddress', 'location'] });
         const loc = place.location;
-        done({ t: 'place', p: { name: place.displayName || '検索した場所', lat: Number(loc.lat().toFixed(6)), lng: Number(loc.lng().toFixed(6)) } });
+        done({ t: 'place', p: { name: place.displayName || '検索した場所', lat: Number(loc.lat().toFixed(6)), lng: Number(loc.lng().toFixed(6)), addr: place.formattedAddress || '' } });
       } catch (e) { toast('場所の情報を取得できませんでした'); }
     });
   } catch (e) { /* 検索部品が使えないときは選択肢だけ出す */ }
@@ -903,8 +984,12 @@ function bind() {
     const b = e.target.closest('[data-area]'); if (!b) return;
     areaFilter = b.dataset.area; renderChips(); renderList(); drawMap(); fitTo(visibleSpots());
   });
-  $('#spotList').addEventListener('click', e => { const b = e.target.closest('[data-spot]'); if (b) openDetail(b.dataset.spot); });
-  $('#pickCancel').addEventListener('click', () => { endPick(); switchView('plan'); });
+  $('#spotList').addEventListener('click', e => {
+    if (e.target.closest('[data-addplace]')) return addPlaceDialog();
+    const b = e.target.closest('[data-spot]'); if (b) openDetail(b.dataset.spot);
+  });
+  $('#btnAddPlace').addEventListener('click', addPlaceDialog);
+  $('#pickCancel').addEventListener('click', () => { const wasAdd = pick && pick.which === 'add'; endPick(); if (!wasAdd) switchView('plan'); });
   $('#btnLocate').addEventListener('click', async () => {
     toast('現在地を確認しています…');
     const pos = await getPos();
@@ -916,6 +1001,11 @@ function bind() {
     if (e.target.closest('[data-close]')) return closeDetail();
     const id = $('#detail').dataset.id;
     const add = e.target.closest('[data-add]'), rm = e.target.closest('[data-remove]'), play = e.target.closest('[data-play]');
+    if (e.target.closest('[data-delplace]')) {
+      ask({ title: 'この場所を削除しますか？', text: `「${byId[id].name}」を一覧と予定から削除します。`, options: [{ label: '削除する', value: 'y', primary: true }] })
+        .then(v => { if (v === 'y') deleteCustom(id); });
+      return;
+    }
     if (add) { addToDay(id, Number(add.dataset.add)); closeDetail(); }
     else if (rm) { removeFromPlan(id); toast('予定から外しました'); }
     else if (play) {
@@ -981,7 +1071,7 @@ function bind() {
     if (act === 'share') return sharePlan();
     if (act === 'reset') {
       const v = await ask({ title: '計画を空にしますか？', text: '2日分の予定と設定がすべて消えます。元に戻せません。', options: [{ label: '空にする', value: 'y', primary: true }] });
-      if (v === 'y') { plan = newPlan(); save(); renderAll(); toast('計画を空にしました'); }
+      if (v === 'y') { plan = newPlan(); areaFilter = 'all'; syncCustom(); save(); renderAll(); toast('計画を空にしました'); }
     }
     if (act === 'saveKey') {
       const v = $('#keyInput').value.trim();
@@ -1000,6 +1090,7 @@ async function boot() {
   let pendingShared = null;
   if (fromHash && local && hasItems(local) && JSON.stringify(fromHash) !== JSON.stringify(local)) { plan = local; pendingShared = fromHash; }
   else plan = fromHash || local || newPlan();
+  syncCustom();
 
   bind(); initSheet(); renderDaySeg(); renderChips(); renderList(); renderPlan(); renderInfo();
   await initMap();
@@ -1011,7 +1102,7 @@ async function boot() {
       text: 'リンクに入っている計画が、このスマホに保存されている計画と違います。開くと、いまの計画は置き換わります。',
       options: [{ label: 'リンクの計画を開く', value: 'y', primary: true }, { label: 'いまの計画のままにする', value: 'n' }], cancel: null
     });
-    if (v === 'y') plan = pendingShared;
+    if (v === 'y') { plan = pendingShared; syncCustom(); }
     save(); renderAll(); fitCurrent(); queueRoutes();
   } else if (hasItems(plan)) save();
 }
