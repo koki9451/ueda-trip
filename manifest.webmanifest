@@ -1,0 +1,14 @@
+{
+  "name": "上田・真田 旅のしおり",
+  "short_name": "上田・真田",
+  "description": "出所: Claude生成。上田・真田観光の地図とスケジュール",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f3ee",
+  "theme_color": "#8f1d22",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

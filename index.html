@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- 出所: Claude生成（上田・真田観光アプリ 画面） -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#8f1d22">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="上田・真田">
+<meta name="robots" content="noindex">
+<title>上田・真田 旅のしおり</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css?v=6">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="mon" aria-hidden="true">●●●<br>●●●</span><span class="brand-t">上田・真田 旅のしおり</span></div>
+  <div class="dayseg" id="daySeg" role="tablist" aria-label="日付の切り替え"></div>
+</header>
+
+<main>
+  <!-- 地図 -->
+  <section class="view is-active" id="view-map" aria-label="地図">
+    <div id="map" aria-label="地図"></div>
+    <div class="map-top">
+      <div class="chips" id="areaChips"></div>
+      <div class="map-note" id="mapNote" hidden></div>
+    </div>
+    <button class="fab" id="btnLocate" aria-label="現在地を表示">現在地</button>
+    <div class="pickbar" id="pickBar" hidden>
+      <span id="pickText">地図をタップして地点を選んでください</span>
+      <button class="btn btn-ghost" id="pickCancel">やめる</button>
+    </div>
+    <div class="sheet is-half" id="listSheet">
+      <button class="sheet-handle" id="listHandle" aria-label="一覧を開閉"><span></span></button>
+      <div class="sheet-head">
+        <strong id="listTitle">スポット</strong>
+        <span class="muted" id="listCount"></span>
+      </div>
+      <div class="sheet-body" id="spotList"></div>
+    </div>
+  </section>
+
+  <!-- スケジュール -->
+  <section class="view" id="view-plan" aria-label="スケジュール">
+    <div class="page" id="planPage"></div>
+  </section>
+
+  <!-- 交通・設定 -->
+  <section class="view" id="view-info" aria-label="交通・設定">
+    <div class="page" id="infoPage"></div>
+  </section>
+</main>
+
+<nav class="tabbar" aria-label="画面の切り替え">
+  <button class="tab is-active" data-view="map"><span class="tab-i" aria-hidden="true">◎</span>地図</button>
+  <button class="tab" data-view="plan"><span class="tab-i" aria-hidden="true">≡</span>スケジュール<span class="tab-badge" id="planBadge" hidden></span></button>
+  <button class="tab" data-view="info"><span class="tab-i" aria-hidden="true">i</span>交通・設定</button>
+</nav>
+
+<!-- スポット詳細 -->
+<div class="modal" id="detail" hidden>
+  <div class="modal-back" data-close></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="detailName">
+    <button class="modal-x" data-close aria-label="閉じる">×</button>
+    <div class="modal-body" id="detailBody"></div>
+  </div>
+</div>
+
+<!-- 汎用の選択・確認 -->
+<div class="modal" id="dialog" hidden>
+  <div class="modal-back" data-close></div>
+  <div class="modal-card modal-small" role="dialog" aria-modal="true">
+    <div class="modal-body" id="dialogBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="spots.js?v=4"></script>
+<script src="app.js?v=7"></script>
+</body>
+</html>
