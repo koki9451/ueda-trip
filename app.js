@@ -39,7 +39,11 @@ function cleanPlan(p) {
     fresh.custom = p.custom
       .filter(c => okPt(c) && typeof c.id === 'string' && /^c[a-z0-9]+$/.test(c.id) && !STATIC[c.id])
       .slice(0, 30)
-      .map(c => ({ id: c.id, name: String(c.name).slice(0, 60), lat: c.lat, lng: c.lng, addr: String(c.addr || '').slice(0, 120), stay: Math.max(5, Number(c.stay) || 30) }));
+      .map(c => {
+        const o = { id: c.id, name: String(c.name).slice(0, 60), lat: c.lat, lng: c.lng, addr: String(c.addr || '').slice(0, 120), stay: Math.max(5, Number(c.stay) || 30) };
+        if (typeof c.pid === 'string' && /^[\w-]{10,300}$/.test(c.pid)) o.pid = c.pid; // Googleの場所ID
+        return o;
+      });
   }
   const known = { ...STATIC, ...Object.fromEntries(fresh.custom.map(c => [c.id, c])) };
   fresh.days.forEach((d, i) => {
@@ -93,7 +97,7 @@ let pick = null; // 地図で地点を選ぶモード {di, which}（which が 'a
 // 自分で追加した場所を、用意したスポットと同じ形にして登録する
 function customSpot(c) {
   return {
-    id: c.id, name: c.name, sub: c.addr || '', area: 'custom', cat: 'custom', lat: c.lat, lng: c.lng,
+    id: c.id, name: c.name, sub: c.addr || '', area: 'custom', cat: 'custom', lat: c.lat, lng: c.lng, pid: c.pid || '',
     intro: '', points: [], sanada: null, stay: c.stay, outdoor: false, hours: '', fee: '', parking: '',
     transit: { level: 'custom', text: '' }, caution: [], check: [], official: '', photo: null, video: null, custom: true
   };
@@ -161,6 +165,14 @@ function compute(di) {
     t += it.stay; res.stay += it.stay;
     if (s.close && t > toMin(s.close)) warns.push(`閉まる時刻（${s.close}）を過ぎます`);
     if (s.outdoor && t > toMin(TRIP.sunset)) warns.push(`日没（${TRIP.sunset}）のあとになります`);
+    if (s.custom && s.pid) {
+      // 自分で追加した場所：Googleから取得した営業時間で確かめる
+      const h = dayHours(placeInfo[s.pid], di);
+      if (h && !h.always) {
+        if (!h.list.length) warns.push('この日は休みの可能性があります（Googleの情報）');
+        else if (!h.list.some(([o, c]) => visitStart >= o && t <= c)) warns.push(`営業時間（${hoursText(h)}）の外になります（Googleの情報）`);
+      }
+    }
     res.warn += warns.length;
     res.byItem.set(it, { leg, from: prev, s, arrive, visitStart, depart: t, warns, infos, n: i + 1, legDepart: depart0 });
     prev = s; res.pts.push(s);
@@ -182,9 +194,12 @@ function compute(di) {
 const gPlace = p => p.gq ? (p.gq.includes('上田') ? p.gq : `${p.gq} 長野県上田市`) : `${p.lat},${p.lng}`;
 const enc = encodeURIComponent;
 const tmode = (mode, src) => src === 'walk' ? 'walking' : (mode === 'drive' ? 'driving' : 'transit');
-const dirUrl = (a, b, mode, src) => `https://www.google.com/maps/dir/?api=1&origin=${enc(gPlace(a))}&destination=${enc(gPlace(b))}&travelmode=${tmode(mode, src)}`;
-const navUrl = (b, mode) => `https://www.google.com/maps/dir/?api=1&destination=${enc(gPlace(b))}&travelmode=${tmode(mode)}`;
-const placeUrl = p => `https://www.google.com/maps/search/?api=1&query=${enc(gPlace(p))}`;
+// Googleの場所IDがある場所は、名前＋IDで渡す（その場所そのものが開く）
+const qOf = p => p.pid ? p.name : gPlace(p);
+const pidQ = (k, p) => p.pid ? `&${k}_place_id=${enc(p.pid)}` : '';
+const dirUrl = (a, b, mode, src) => `https://www.google.com/maps/dir/?api=1&origin=${enc(qOf(a))}${pidQ('origin', a)}&destination=${enc(qOf(b))}${pidQ('destination', b)}&travelmode=${tmode(mode, src)}`;
+const navUrl = (b, mode) => `https://www.google.com/maps/dir/?api=1&destination=${enc(qOf(b))}${pidQ('destination', b)}&travelmode=${tmode(mode)}`;
+const placeUrl = p => `https://www.google.com/maps/search/?api=1&query=${enc(qOf(p))}${pidQ('query', p)}`;
 function routeUrl(pts) {
   const mid = pts.slice(1, -1).slice(0, 9).map(gPlace).join('|');
   return `https://www.google.com/maps/dir/?api=1&origin=${enc(gPlace(pts[0]))}&destination=${enc(gPlace(pts[pts.length - 1]))}${mid ? `&waypoints=${enc(mid)}` : ''}&travelmode=driving`;
@@ -264,9 +279,13 @@ function initGoogle(key) {
         if (settled) return;
         clearTimeout(timer);
         M.map = new google.maps.Map($('#map'), {
-          center: TRIP.center, zoom: 12, disableDefaultUI: true, gestureHandling: 'greedy', clickableIcons: false
+          center: TRIP.center, zoom: 12, disableDefaultUI: true, gestureHandling: 'greedy'
         });
-        M.map.addListener('click', e => onMapClick(e.latLng.lat(), e.latLng.lng()));
+        M.map.addListener('click', e => {
+          const lat = e.latLng.lat(), lng = e.latLng.lng();
+          // お店などのアイコンをタップしたときは、その場所そのものを扱う（Google標準の吹き出しは出さない）
+          if (e.placeId) { e.stop(); onPoiClick(e.placeId, lat, lng); } else onMapClick(lat, lng);
+        });
         M.kind = 'google'; M.note = '';
         settled = true; resolve();
       } catch (e) { fail(e); }
@@ -379,12 +398,7 @@ function drawMap() {
 
 function onMapClick(lat, lng) {
   if (!pick) return;
-  if (pick.which === 'add') {
-    endPick();
-    askText({ title: '場所の名前', text: '追加する場所の名前を入れてください。', placeholder: '例：泊まるホテル、気になるカフェ' })
-      .then(name => { if (name) addCustom(name, Number(lat.toFixed(6)), Number(lng.toFixed(6)), ''); });
-    return;
-  }
+  if (pick.which === 'add') { endPick(); addByTap(Number(lat.toFixed(6)), Number(lng.toFixed(6))); return; }
   const day = plan.days[pick.di];
   const pt = { name: '地図で選んだ地点', lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
   if (pick.which === 'start') day.start = pt; else day.end = pt;
@@ -422,20 +436,76 @@ async function addPlaceDialog() {
     onOpen: (box, done) => { if (M.kind === 'google') mountPlaceSearch(box, done); }
   });
   if (!v) return;
-  if (v.t === 'place') return addCustom(v.p.name, v.p.lat, v.p.lng, v.p.addr || '');
+  if (v.t === 'place') return addCustom({ name: v.p.name, lat: v.p.lat, lng: v.p.lng, addr: v.p.addr, pid: v.p.pid, stay: stayByTypes(v.p.types) });
   if (v.t === 'pick') {
     pick = { which: 'add' };
-    $('#pickText').textContent = '追加したい場所を地図でタップしてください';
+    $('#pickText').textContent = M.kind === 'google' ? 'お店などのアイコンか、追加したい場所をタップしてください' : '追加したい場所を地図でタップしてください';
     $('#pickBar').hidden = false; setSheet('peek'); switchView('map');
   }
 }
-function addCustom(name, lat, lng, addr) {
+function addCustom({ name, lat, lng, addr = '', pid = '', stay = 30 }) {
+  const dup = pid && (plan.custom || []).find(c => c.pid === pid);
+  if (dup) { openDetail(dup.id); return toast('この場所はすでに追加されています'); }
   if ((plan.custom || []).length >= 30) return toast('追加できるのは30か所までです');
-  const c = { id: 'c' + Date.now().toString(36), name: String(name).slice(0, 60), lat, lng, addr: String(addr || '').slice(0, 120), stay: 30 };
+  const c = { id: 'c' + Date.now().toString(36), name: String(name).slice(0, 60), lat, lng, addr: String(addr || '').slice(0, 120), stay };
+  if (pid) c.pid = pid;
   plan.custom = [...(plan.custom || []), c];
   syncCustom(); save(); renderAll();
   openDetail(c.id);
   toast('場所を追加しました。日にちを選ぶと予定に入ります', 3600);
+}
+// 地図上のお店などのアイコンをタップしたとき
+async function onPoiClick(pid, lat, lng) {
+  if (pick && pick.which !== 'add') {
+    // 出発・帰着地点を選んでいる最中：その場所の名前で設定する
+    const { di, which } = pick; endPick();
+    const info = await loadPlaceInfo(pid);
+    const ok = info && !info.failed && info.lat != null;
+    const pt = { name: (ok && info.name) || '地図で選んだ地点', lat: Number((ok ? info.lat : lat).toFixed(6)), lng: Number((ok ? info.lng : lng).toFixed(6)) };
+    if (ok) pt.pid = pid;
+    const day = plan.days[di];
+    if (which === 'start') day.start = pt; else day.end = pt;
+    save(); renderAll(); switchView('plan'); queueRoutes();
+    return toast(`${pick_label(which)}を「${pt.name}」にしました`);
+  }
+  if (pick) endPick();
+  toast('場所の情報を取得しています…');
+  const info = await loadPlaceInfo(pid);
+  if (!info || info.failed || !info.name) return addByTap(Number(lat.toFixed(6)), Number(lng.toFixed(6)));
+  const v = await ask({
+    title: info.name, text: [info.typeName, info.addr].filter(Boolean).join('／'),
+    options: [{ label: 'この場所を追加する', value: 'y', primary: true }]
+  });
+  if (v === 'y') addCustom({ name: info.name, lat: Number((info.lat ?? lat).toFixed(6)), lng: Number((info.lng ?? lng).toFixed(6)), addr: info.addr, pid, stay: stayByTypes(info.types) });
+}
+// 地図の何もない所をタップしたとき：近くの場所の候補を出す（取れなければ名前を手入力）
+async function addByTap(lat, lng) {
+  if (M.kind === 'google') {
+    toast('近くの場所を探しています…');
+    const cands = await nearbyPlaces(lat, lng);
+    if (cands.length) {
+      const v = await ask({
+        title: '近くの場所から選ぶ',
+        text: 'タップした地点の近くにある場所です。選ぶと、営業時間などの情報も自動で入ります。',
+        options: [...cands.map((c, i) => ({ label: `${c.name}${c.typeName ? `（${c.typeName}）` : ''}`, value: i })), { label: 'どれでもない（名前を自分で入れる）', value: -1 }]
+      });
+      if (v == null) return;
+      if (v >= 0) { const c = cands[v]; return addCustom({ name: c.name, lat: Number(c.lat.toFixed(6)), lng: Number(c.lng.toFixed(6)), addr: c.addr, pid: c.pid, stay: stayByTypes(c.types) }); }
+    }
+  }
+  const name = await askText({ title: '場所の名前', text: '追加する場所の名前を入れてください。', placeholder: '例：泊まるホテル、気になるカフェ' });
+  if (name) addCustom({ name, lat, lng });
+}
+// すでに追加した場所に、あとからGoogleの情報をひも付ける
+async function linkPlaceInfo(id) {
+  const c = (plan.custom || []).find(x => x.id === id); if (!c) return;
+  toast('近くの場所を探しています…');
+  const cands = await nearbyPlaces(c.lat, c.lng);
+  if (!cands.length) return toast('近くに該当する場所が見つかりませんでした');
+  const v = await ask({ title: 'どの場所の情報を使いますか？', text: `「${c.name}」の近くにある場所です。`, options: cands.map((x, i) => ({ label: `${x.name}${x.typeName ? `（${x.typeName}）` : ''}`, value: i })) });
+  if (v == null) return;
+  c.pid = cands[v].pid; if (!c.addr) c.addr = String(cands[v].addr || '').slice(0, 120);
+  syncCustom(); save(); renderAll(); queueRoutes(); openDetail(id);
 }
 function deleteCustom(id) {
   plan.custom = (plan.custom || []).filter(c => c.id !== id);
@@ -515,7 +585,102 @@ async function refreshRoutes(di) {
   }
 }
 let routeTimer = null;
-function queueRoutes() { clearTimeout(routeTimer); routeTimer = setTimeout(() => refreshRoutes(curDay), 700); }
+function queueRoutes() { clearTimeout(routeTimer); routeTimer = setTimeout(() => refreshRoutes(curDay), 700); ensurePlanInfo(); }
+
+// ───────── Googleの場所情報（自分で追加した場所の営業時間など） ─────────
+// 取得した内容はこのページを開いている間だけ持ち、保存しない（保存するのは場所のIDだけ）
+const placeInfo = {}, placeBusy = {};
+const P_FULL = ['displayName', 'formattedAddress', 'location', 'types', 'primaryTypeDisplayName', 'regularOpeningHours', 'nationalPhoneNumber', 'websiteURI', 'googleMapsURI', 'rating', 'userRatingCount', 'editorialSummary', 'photos'];
+const P_MID = ['displayName', 'formattedAddress', 'location', 'types', 'primaryTypeDisplayName', 'regularOpeningHours', 'nationalPhoneNumber', 'websiteURI', 'googleMapsURI'];
+const P_MIN = ['displayName', 'formattedAddress', 'location'];
+
+function readPlace(place) {
+  const loc = place.location, oh = place.regularOpeningHours;
+  let photo = null;
+  try {
+    const ph = place.photos && place.photos[0];
+    if (ph) photo = { url: ph.getURI({ maxWidth: 800 }), by: (ph.authorAttributions || []).map(a => a.displayName).filter(Boolean).join('、') };
+  } catch (e) { /* 写真が使えないキーでは無視 */ }
+  return {
+    name: place.displayName || '', addr: place.formattedAddress || '',
+    lat: loc ? loc.lat() : null, lng: loc ? loc.lng() : null,
+    types: place.types || [], typeName: place.primaryTypeDisplayName || '',
+    periods: oh && oh.periods ? oh.periods.map(p => ({ od: p.open.day, o: p.open.hour * 60 + p.open.minute, cd: p.close ? p.close.day : null, c: p.close ? p.close.hour * 60 + p.close.minute : null })) : null,
+    tel: place.nationalPhoneNumber || '', site: place.websiteURI || '', gmap: place.googleMapsURI || '',
+    rating: place.rating || null, ratingN: place.userRatingCount || null, summary: place.editorialSummary || '', photo
+  };
+}
+async function loadPlaceInfo(pid) {
+  if (M.kind !== 'google' || !pid) return null;
+  if (placeInfo[pid]) return placeInfo[pid];
+  if (placeBusy[pid]) return placeBusy[pid];
+  placeBusy[pid] = (async () => {
+    try {
+      const { Place } = await google.maps.importLibrary('places');
+      // 取れない項目があるキーでは、項目を減らして取り直す
+      for (const fields of [P_FULL, P_MID, P_MIN]) {
+        try {
+          const place = new Place({ id: pid, requestedLanguage: 'ja' });
+          await place.fetchFields({ fields });
+          return (placeInfo[pid] = readPlace(place));
+        } catch (e) { /* 次の項目セットへ */ }
+      }
+    } catch (e) { /* 部品を読み込めない */ }
+    return (placeInfo[pid] = { failed: true });
+  })();
+  const r = await placeBusy[pid]; delete placeBusy[pid];
+  return r;
+}
+// その日の営業時間：null=情報なし / {always} / {list:[[開く,閉まる]…]}（分。日またぎは24時を超える値）
+function dayHours(info, di) {
+  if (!info || info.failed || !info.periods) return null;
+  if (info.periods.length === 1 && info.periods[0].c == null) return { always: true };
+  const wd = new Date(`${TRIP.days[di].date}T12:00:00+09:00`).getUTCDay();
+  return { list: info.periods.filter(p => p.od === wd).map(p => [p.o, p.c == null ? p.o + 1440 : (p.cd !== p.od ? p.c + 1440 : p.c)]) };
+}
+const hoursText = h => !h ? '情報なし' : h.always ? '24時間営業' : (h.list.length ? h.list.map(([o, c]) => `${fmt(o)}〜${fmt(c)}`).join('／') : '休み');
+function stayByTypes(types) {
+  const t = types || [], has = x => t.includes(x), ends = x => t.some(y => y.endsWith(x));
+  if (has('restaurant') || has('food') || ends('_restaurant')) return 60;
+  if (has('cafe') || has('coffee_shop') || has('bakery')) return 40;
+  if (has('museum') || has('art_gallery') || has('tourist_attraction') || has('park')) return 45;
+  if (has('lodging') || has('hotel')) return 15;
+  if (has('store') || ends('_store')) return 20;
+  return 30;
+}
+async function nearbyPlaces(lat, lng) {
+  try {
+    const { Place, SearchNearbyRankPreference } = await google.maps.importLibrary('places');
+    const { places } = await Place.searchNearby({
+      fields: ['displayName', 'formattedAddress', 'location', 'types', 'primaryTypeDisplayName'],
+      locationRestriction: { center: { lat, lng }, radius: 80 }, maxResultCount: 4,
+      rankPreference: SearchNearbyRankPreference.DISTANCE, language: 'ja', region: 'jp'
+    });
+    return (places || []).filter(p => p.location).map(p => ({ pid: p.id, name: p.displayName || '', addr: p.formattedAddress || '', lat: p.location.lat(), lng: p.location.lng(), types: p.types || [], typeName: p.primaryTypeDisplayName || '' }));
+  } catch (e) { return []; }
+}
+// 予定に入っている「追加した場所」の営業時間を取り、スケジュールの注意に反映する
+function ensurePlanInfo() {
+  if (M.kind !== 'google') return;
+  const ids = new Set(plan.days.flatMap(d => d.items.map(it => it.id)));
+  (plan.custom || []).filter(c => c.pid && ids.has(c.id) && !placeInfo[c.pid] && !placeBusy[c.pid])
+    .forEach(c => { loadPlaceInfo(c.pid).then(() => { renderPlan(); }); });
+}
+function placeInfoHtml(info) {
+  if (!info || info.failed) return '<p class="muted">Googleの情報を取得できませんでした。「Googleマップで開く」で確認してください。</p>';
+  const rows = [
+    info.typeName ? ['種類', esc(info.typeName)] : null,
+    info.rating ? ['評価', `★ ${esc(info.rating)}${info.ratingN ? `（${esc(info.ratingN)}件）` : ''}`] : null,
+    ...TRIP.days.map((d, i) => [`${d.label}（${d.wd}）`, esc(hoursText(dayHours(info, i)))]),
+    info.tel ? ['電話', `<a href="tel:${esc(info.tel)}">${esc(info.tel)}</a>`] : null,
+    info.site ? ['サイト', `<a href="${esc(info.site)}" target="_blank" rel="noopener">公式サイトを開く</a>`] : null
+  ].filter(Boolean);
+  return `
+    ${info.photo ? `<div class="d-photo" style="border-radius:10px;margin-bottom:10px"><img src="${esc(info.photo.url)}" alt="" loading="lazy" onerror="this.closest('.d-photo').remove()"><span class="d-credit">写真：${esc(info.photo.by || '投稿者')}／Google</span></div>` : ''}
+    ${info.summary ? `<p style="margin:0 0 8px">${esc(info.summary)}</p>` : ''}
+    <dl class="d-facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+    <p class="muted" style="margin:8px 0 0">情報：Google（いま取得した内容です。営業時間は通常の曜日のもので、祝日は異なる場合があります）</p>`;
+}
 
 // ───────── 一覧（地図タブ） ─────────
 const TRANSIT_TAG = { good: ['tag-good', '公共交通で行きやすい'], few: ['tag-few', '本数少ない'], car: ['tag-car', '車・タクシー向き'], custom: ['tag-plain', '自分で追加'] };
@@ -601,6 +766,10 @@ function openDetail(id) {
     ['公共交通', `<span class="tag ${tg[0]}">${tg[1]}</span><br>${esc(s.transit.text)}`],
     s.tel ? ['電話', `<a href="tel:${esc(s.tel)}">${esc(s.tel)}</a>${s.telLabel ? `（${esc(s.telLabel)}）` : ''}`] : null
   ]).filter(Boolean);
+  const gInfoInit = !s.custom ? '' : s.pid
+    ? (M.kind === 'google' ? '<p class="muted">Googleの情報を読み込んでいます…</p>' : '<p class="muted">Googleマップのキーを入れると、営業時間などの情報がここに表示されます。</p>')
+    : (M.kind === 'google' ? '<p class="muted">この場所にはGoogleの情報がひも付いていません。</p><button class="btn btn-sm" data-findinfo>近くの場所から情報を探す</button>'
+      : '<p class="muted">Googleマップのキーを入れると、近くの場所から営業時間などの情報を探せます。</p>');
   $('#detailBody').innerHTML = `
     ${photo}
     <div class="d-inner">
@@ -608,13 +777,14 @@ function openDetail(id) {
       <span class="muted">　${esc(AREAS[s.area].name)}</span>
       <h2 class="d-name" id="detailName">${esc(s.name)}</h2>
       ${s.sub && !s.custom ? `<div class="d-sub">${esc(s.sub)}</div>` : ''}
-      <p class="d-intro">${s.custom ? '自分で追加した場所です。営業時間などの情報は入っていないので、Googleマップで確認してください。' : esc(s.intro)}</p>
+      <p class="d-intro">${s.custom ? '自分で追加した場所です。' : esc(s.intro)}</p>
       ${s.points.length ? `<div class="d-h">おすすめポイント</div>
       <ol class="d-points">${s.points.map(p => `<li>${esc(p)}</li>`).join('')}</ol>` : ''}
       ${s.sanada ? `<div class="d-h">真田との関わり</div>
         <div class="d-sanada"><span class="tag tag-plain">${esc(s.sanada.type)}</span> ${esc(s.sanada.text)}</div>` : ''}
       <div class="d-h">${s.custom ? '基本情報' : '基本情報（11/22・23）'}</div>
       <dl class="d-facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${k === '公共交通' || k === '電話' ? v : esc(v)}</dd>`).join('')}</dl>
+      ${s.custom ? `<div class="d-h">Googleの情報</div><div id="gInfo">${gInfoInit}</div>` : ''}
       ${s.caution && s.caution.length ? `<div class="d-note is-warn"><ul>${s.caution.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
       ${s.check && s.check.length ? `<div class="d-note is-check"><b>要確認</b><ul>${s.check.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div>` : ''}
       ${video}
@@ -630,6 +800,13 @@ function openDetail(id) {
   $('#detail').hidden = false;
   $('#detail').dataset.id = id;
   panTo(s, 13);
+  if (s.custom && s.pid && M.kind === 'google') {
+    loadPlaceInfo(s.pid).then(info => {
+      const box = $('#gInfo');
+      if (box && !$('#detail').hidden && $('#detail').dataset.id === id) box.innerHTML = placeInfoHtml(info);
+      renderPlan(); // 営業時間の注意に反映
+    });
+  }
 }
 function renderDetailActions(id) {
   const d = dayOf(id);
@@ -821,9 +998,9 @@ async function mountPlaceSearch(box, done) {
     pac.addEventListener('gmp-select', async ({ placePrediction }) => {
       try {
         const place = placePrediction.toPlace();
-        await place.fetchFields({ fields: ['displayName', 'formattedAddress', 'location'] });
+        await place.fetchFields({ fields: ['displayName', 'formattedAddress', 'location', 'types'] });
         const loc = place.location;
-        done({ t: 'place', p: { name: place.displayName || '検索した場所', lat: Number(loc.lat().toFixed(6)), lng: Number(loc.lng().toFixed(6)), addr: place.formattedAddress || '' } });
+        done({ t: 'place', p: { name: place.displayName || '検索した場所', lat: Number(loc.lat().toFixed(6)), lng: Number(loc.lng().toFixed(6)), addr: place.formattedAddress || '', pid: place.id || '', types: place.types || [] } });
       } catch (e) { toast('場所の情報を取得できませんでした'); }
     });
   } catch (e) { /* 検索部品が使えないときは選択肢だけ出す */ }
@@ -1001,6 +1178,7 @@ function bind() {
     if (e.target.closest('[data-close]')) return closeDetail();
     const id = $('#detail').dataset.id;
     const add = e.target.closest('[data-add]'), rm = e.target.closest('[data-remove]'), play = e.target.closest('[data-play]');
+    if (e.target.closest('[data-findinfo]')) return linkPlaceInfo(id);
     if (e.target.closest('[data-delplace]')) {
       ask({ title: 'この場所を削除しますか？', text: `「${byId[id].name}」を一覧と予定から削除します。`, options: [{ label: '削除する', value: 'y', primary: true }] })
         .then(v => { if (v === 'y') deleteCustom(id); });
