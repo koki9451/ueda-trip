@@ -12,7 +12,7 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const LS_PLAN = 'ueda.plan.v1', LS_KEY = 'ueda.gmapkey.v1';
 const DRIVE_BUFFER = 10; // 駐車・乗り降りの余裕（分）
-const APP_VERSION = 11;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
+const APP_VERSION = 12;  // 公開のたびに上げる（version.json と index.html の ?v= も同じ数字にする）
 
 const store = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
@@ -1151,7 +1151,11 @@ function renderInfo() {
       <div class="field"><input type="password" id="keyInput" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza…で始まるキーを貼り付け" aria-label="Googleマップのキー"><button class="btn btn-primary" data-info="saveKey">保存</button></div>
       <div class="status ${status[0]}">${status[1]}</div>
       ${transitMsg ? `<div class="status">${transitMsg}</div>` : ''}
-      ${key ? '<button class="btn btn-sm" data-info="delKey" style="margin-top:8px">キーを消す</button>' : ''}
+      ${key ? `<div class="btn-row" style="margin-top:10px">
+        <button class="btn btn-sm" data-info="copyKey">保存したキーをコピー</button>
+        <button class="btn btn-sm" data-info="delKey">キーを消す</button>
+      </div>
+      <p class="muted" style="margin-top:6px">別のスマホにも入れるときは、コピーしたキーを自分宛てのメモなどで送り、そのスマホのこの画面に貼り付けてください。</p>` : ''}
     </div>
     <div class="card">
       <h2>このアプリの情報について</h2>
@@ -1299,6 +1303,12 @@ function bind() {
     const act = b.dataset.info;
     if (act === 'share') return sharePlan();
     if (act === 'checkUpdate') return checkUpdate(true);
+    if (act === 'copyKey') {
+      const k = store.get(LS_KEY); if (!k) return;
+      try { await navigator.clipboard.writeText(k); toast('キーをコピーしました。スマホへ送って貼り付けてください', 4000); }
+      catch (e) { await ask({ title: '保存したキー（長押しでコピー）', text: k, options: [], cancel: '閉じる' }); }
+      return;
+    }
     if (act === 'reset') {
       const v = await ask({ title: '計画を空にしますか？', text: '2日分の予定と設定がすべて消えます。元に戻せません。', options: [{ label: '空にする', value: 'y', primary: true }] });
       if (v === 'y') { plan = newPlan(); areaFilter = 'all'; syncCustom(); save(); renderAll(); toast('計画を空にしました'); }

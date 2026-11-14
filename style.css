@@ -168,7 +168,7 @@ main { position: fixed; inset: var(--top-h) 0 calc(var(--tab-h) + var(--safe-b))
   border: 0; background: rgba(255,255,255,.92); font-size: 22px; line-height: 1; box-shadow: 0 1px 4px rgba(0,0,0,.25);
 }
 .dlg-title { font-size: 17px; font-weight: 700; margin: 0 0 6px; }
-.dlg-text { color: var(--sub); font-size: 14px; margin: 0 0 14px; }
+.dlg-text { color: var(--sub); font-size: 14px; margin: 0 0 14px; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .dlg-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .dlg-list .btn { justify-content: flex-start; text-align: left; }
 
